@@ -11,14 +11,76 @@ The project followed a structured NLP pipeline:
 The initial phase involved preparing the text data for analysis. This is a crucial step to ensure the quality of features extracted later.
 
 *   **Dataset Loading**: The primary dataset used is `bbc_news_20220307_20240703.csv`, containing news articles with titles and descriptions.
+    ```python
+    # From main.py: load_dataset function
+    def load_dataset(file_path):
+        if not os.path.exists(file_path):
+            # ... (error handling)
+        df = pd.read_csv(file_path)
+        # Check for missing values
+        if df.isnull().values.any():
+            # ... (warning or handling for missing values)
+        return df
+    ```
 *   **Text Cleaning (Regular Expressions)**: Regular expressions were employed to remove irrelevant characters and patterns, such as URLs, email addresses, special symbols (except spaces), and standalone numbers. This step helps in reducing noise from the text.
+    ```python
+    # From main.py: normalize_dataset function (regex patterns)
+    url_pattern = re.compile(r\'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\\\(\\\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+\')
+    email_pattern = re.compile(r\'\\S+@\\S+\')
+    special_chars_pattern = re.compile(r\'[^a-zA-Z0-9\\s]\')  # Remove all special chars except spaces
+    whitespace_pattern = re.compile(r\'\\s+\')
+    number_pattern = re.compile(r\'\\b\\d+\\b\')  # Remove standalone numbers
+    
+    def clean_text_with_regex(text):
+        text = url_pattern.sub('', text)
+        text = email_pattern.sub('', text)
+        text = special_chars_pattern.sub('', text)
+        text = number_pattern.sub('', text)
+        text = whitespace_pattern.sub(' ', text).strip()
+        return text
+    ```
 *   **Text Normalization**:
     *   **Lowercasing**: All text was converted to lowercase to ensure consistency (e.g., "Ukraine" and "ukraine" are treated as the same word).
-    *   **Lemmatization (SpaCy)**: SpaCy's `en_core_web_sm` model was used for lemmatization, reducing words to their base or dictionary form (e.g., "running" to "run"). This helps in consolidating different forms of a word.
+    *   **Lemmatization (SpaCy)**: SpaCy\'s `en_core_web_sm` model was used for lemmatization, reducing words to their base or dictionary form (e.g., "running" to "run"). This helps in consolidating different forms of a word.
     *   **Stemming (NLTK PorterStemmer)**: After lemmatization, PorterStemmer was applied to further reduce words to their root form (e.g., "studies", "studying" to "studi").
+    ```python
+    # From main.py: normalize_dataset function (part of process_text_series)
+    # Simplified representation of the logic within process_text_series
+    # for doc in spacy_model.pipe(batch_texts, batch_size=spacy_batch_size):
+    #     lemmatized_tokens = [token.lemma_.lower() for token in doc if not token.is_punct and not token.is_space]
+    #     # ... further processing including stemming ...
+    # stemmer = PorterStemmer()
+    # stemmed_tokens = [stemmer.stem(token) for token in lemmatized_tokens]
+    ```
 *   **Typo Correction (Edit Distance)**: To handle misspellings, an edit distance-based approach was implemented. `difflib.get_close_matches` was used to find the closest correct word from a predefined dictionary for potential typos. This improves data quality by correcting common spelling errors. A cache was used to optimize this process.
+    ```python
+    # From main.py: normalize_dataset function
+    from difflib import get_close_matches
+    typo_cache = {}
+    dictionary_words = { ... } # Predefined dictionary
 
-The preprocessing steps were applied to both 'title' and 'description' fields of the dataset, creating new columns: `normalized_title` and `normalized_desc`.
+    def correct_typos_with_edit_distance(text):
+        corrected_words = []
+        for word in text.split():
+            if word in typo_cache:
+                corrected_words.append(typo_cache[word])
+                continue
+            if word not in dictionary_words: # Basic check
+                matches = get_close_matches(word, dictionary_words, n=1, cutoff=0.8)
+                if matches:
+                    corrected_word = matches[0]
+                    typo_cache[word] = corrected_word
+                    corrected_words.append(corrected_word)
+                else:
+                    typo_cache[word] = word # Cache miss
+                    corrected_words.append(word)
+            else:
+                typo_cache[word] = word # Cache if already correct
+                corrected_words.append(word)
+        return " ".join(corrected_words)
+    ```
+
+The preprocessing steps were applied to both \'title\' and \'description\' fields of the dataset, creating new columns: `normalized_title` and `normalized_desc`.
 
 ### 1.2. Feature Engineering
 
@@ -26,17 +88,70 @@ Once the text was preprocessed, various features were extracted to represent the
 
 *   **N-gram Models**:
     *   Bigrams (sequences of two words) and trigrams (sequences of three words) were extracted from both normalized titles and descriptions. N-grams capture local word order and contextual information (e.g., "global food" from "ukrain war catastroph global food").
+    ```python
+    # From main.py: feature_engineering function
+    def extract_ngrams(text, n):
+        if not isinstance(text, str) or not text.strip():
+            return []
+        tokens = text.split()
+        if len(tokens) < n:
+            return []
+        return [" ".join(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+
+    # df_features['bigrams_title'] = df_features['normalized_title'].apply(lambda x: extract_ngrams(x, 2))
+    # df_features['trigrams_title'] = df_features['normalized_title'].apply(lambda x: extract_ngrams(x, 3))
+    ```
 *   **TF-IDF (Term Frequency-Inverse Document Frequency)**:
     *   TF-IDF vectors were generated for titles and descriptions. This technique assigns weights to words based on their frequency in a document and their rarity across the entire corpus, highlighting words that are important to a specific document. `TfidfVectorizer` from Scikit-learn was used, considering unigrams and bigrams, with `max_features=100`.
+    ```python
+    # From main.py: feature_engineering function
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    
+    # tfidf_title = TfidfVectorizer(max_features=100, ngram_range=(1, 2), min_df=2, max_df=0.8, stop_words=None)
+    # title_texts = df_features['normalized_title'].fillna('').tolist()
+    # title_texts = [text if text.strip() else 'empty' for text in title_texts]
+    # tfidf_title_matrix = tfidf_title.fit_transform(title_texts)
+    ```
 *   **Word2Vec Embeddings**:
     *   Word2Vec (from Gensim library) was used to create dense vector representations (embeddings) of words. These embeddings capture semantic relationships between words (e.g., words with similar meanings are closer in the vector space). A model was trained on the combined normalized titles and descriptions, generating 50-dimensional vectors for each word. The average Word2Vec vector was then computed for each title and description.
+    ```python
+    # From main.py: feature_engineering function
+    from gensim.models import Word2Vec
+    import numpy as np
+
+    # def prepare_sentences_for_word2vec(series):
+    #     sentences = []
+    #     for text in series.fillna(''):
+    #         if isinstance(text, str) and text.strip():
+    #             sentences.append(text.split())
+    #     return sentences
+
+    # title_sentences = prepare_sentences_for_word2vec(df_features['normalized_title'])
+    # desc_sentences = prepare_sentences_for_word2vec(df_features['normalized_desc'])
+    # all_sentences = title_sentences + desc_sentences
+    
+    # word2vec_model = Word2Vec(sentences=all_sentences, vector_size=50, window=5, min_count=2, workers=4, epochs=10)
+
+    # def get_text_vector(text, model, vector_size=50):
+    #     words = text.split()
+    #     word_vectors = [model.wv[word] for word in words if word in model.wv]
+    #     if not word_vectors:
+    #         return np.zeros(vector_size)
+    #     return np.mean(word_vectors, axis=0)
+    ```
 *   **Statistical Text Features**:
     *   Several statistical features were calculated for both titles and descriptions:
         *   Text length (number of characters)
         *   Word count
         *   Average word length
         *   Unique word count
-
+    ```python
+    # From main.py: feature_engineering function (Conceptual - actual implementation spread out)
+    # df_features[f'text_length_{col_prefix}'] = series.apply(len)
+    # df_features[f'word_count_{col_prefix}'] = series.apply(lambda x: len(x.split()))
+    # df_features[f'avg_word_length_{col_prefix}'] = series.apply(lambda x: np.mean([len(w) for w in x.split()]) if len(x.split()) > 0 else 0)
+    # df_features[f'unique_word_count_{col_prefix}'] = series.apply(lambda x: len(set(x.split())))
+    ```
 These engineered features were added as new columns to the dataset.
 
 ### 1.3. Text Classification
@@ -44,15 +159,49 @@ These engineered features were added as new columns to the dataset.
 With the features in place, the next step was to train and evaluate classification models.
 
 *   **Automatic Category Labeling**:
-    *   Since the provided dataset didn't have explicit category labels, a rule-based function (`categorize_news_article`) was developed to automatically assign categories (e.g., 'Politics', 'War & Conflict', 'Business & Economy', 'Sports', 'Technology') to each article. This function uses keyword matching within the article's title and description. Categories with fewer than 10 samples were filtered out to ensure robust model training.
+    *   Since the provided dataset didn\'t have explicit category labels, a rule-based function (`categorize_news_article`) was developed to automatically assign categories (e.g., \'Politics\', \'War & Conflict\', \'Business & Economy\', \'Sports\', \'Technology\') to each article. This function uses keyword matching within the article\'s title and description. Categories with fewer than 10 samples were filtered out to ensure robust model training.
+    ```python
+    # From main.py: text_classification function (conceptual, actual function might be more complex)
+    # def categorize_news_article(row):
+    #     # ... keyword matching logic ...
+    #     return category
+    # df['category'] = df.apply(categorize_news_article, axis=1)
+    # category_counts = df['category'].value_counts()
+    # df = df[df['category'].isin(category_counts[category_counts >= 10].index)]
+    ```
 *   **Feature Selection**:
     *   A combination of TF-IDF features, Word2Vec embeddings, and statistical features were used as input for the classifiers.
-*   **Label Encoding**: The generated text categories were converted into numerical labels using Scikit-learn's `LabelEncoder`.
+*   **Label Encoding**: The generated text categories were converted into numerical labels using Scikit-learn\'s `LabelEncoder`.
+    ```python
+    # From main.py: text_classification function
+    from sklearn.preprocessing import LabelEncoder
+    # label_encoder = LabelEncoder()
+    # df['category_encoded'] = label_encoder.fit_transform(df['category'])
+    ```
 *   **Train-Test Split**: The dataset was split into training (80%) and testing (20%) sets using a stratified split to maintain the proportion of each category in both sets.
+    ```python
+    # From main.py: text_classification function
+    from sklearn.model_selection import train_test_split
+    # X_train, X_test, y_train, y_test = train_test_split(
+    #     X, y, test_size=0.2, random_state=42, stratify=y
+    # )
+    ```
 *   **Model Training**: Several classification algorithms were implemented and trained:
     *   **Naive Bayes (MultinomialNB and GaussianNB)**: This was a required model. MultinomialNB is suitable for text classification with discrete features (like word counts), while GaussianNB assumes features follow a Gaussian distribution.
-    *   **Decision Tree Classifier**: A tree-based model that makes decisions based on feature values.
     *   **Random Forest Classifier**: An ensemble model that builds multiple decision trees and aggregates their predictions, generally offering better performance and robustness than a single decision tree.
+    ```python
+    # From main.py: text_classification function
+    from sklearn.naive_bayes import MultinomialNB, GaussianNB
+    from sklearn.ensemble import RandomForestClassifier
+
+    # models = {
+    #     "Multinomial NB": MultinomialNB(),
+    #     "Gaussian NB": GaussianNB(),
+    #     "Random Forest": RandomForestClassifier(random_state=42),
+    # }
+    # for name, model in models.items():
+    #     model.fit(X_train_scaled, y_train) # Assuming X_train_scaled for GaussianNB
+    ```
 *   **Model Evaluation**: The performance of each trained model was assessed on the test set using standard evaluation metrics:
     *   **Accuracy**: The proportion of correctly classified articles.
     *   **Precision**: The ability of the classifier not to label as positive a sample that is negative.
@@ -61,6 +210,20 @@ With the features in place, the next step was to train and evaluate classificati
     *   **Cross-Validation**: 5-fold cross-validation was performed during training to assess model generalization.
     *   **Classification Report**: A detailed report showing precision, recall, and F1-score for each category.
     *   **Confusion Matrix**: A table visualizing the performance of a classification algorithm, showing correct and incorrect predictions for each class.
+    ```python
+    # From main.py: text_classification function
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix, roc_auc_score
+    from sklearn.model_selection import cross_val_score
+
+    # y_pred = model.predict(X_test_scaled) # Assuming X_test_scaled
+    # accuracy = accuracy_score(y_test, y_pred)
+    # precision = precision_score(y_test, y_pred, average='macro', zero_division=0)
+    # recall = recall_score(y_test, y_pred, average='macro', zero_division=0)
+    # f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
+    # report = classification_report(y_test, y_pred, target_names=label_encoder.classes_, zero_division=0)
+    # conf_matrix = confusion_matrix(y_test, y_pred)
+    # cv_scores = cross_val_score(model, X_scaled, y, cv=5, scoring='accuracy') # Assuming X_scaled
+    ```
 
 ## 2. Dataset
 
@@ -76,9 +239,30 @@ A combination of libraries and models were utilized throughout the project:
 
 *   **Core NLP Libraries**:
     *   **NLTK**: For PorterStemmer and basic tokenization utilities.
+        ```python
+        from nltk.stem import PorterStemmer
+        ```
     *   **SpaCy**: For efficient lemmatization using the `en_core_web_sm` model.
+        ```python
+        # import spacy
+        # nlp = spacy.load('en_core_web_sm')
+        ```
     *   **Scikit-learn**: For TF-IDF vectorization, machine learning classifiers (Naive Bayes, Decision Tree, Random Forest), train-test split, label encoding, and evaluation metrics.
+        ```python
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.model_selection import train_test_split, cross_val_score
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+        from sklearn.naive_bayes import MultinomialNB, GaussianNB
+        from sklearn.tree import DecisionTreeClassifier
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.svm import SVC
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix
+        ```
     *   **Gensim**: For Word2Vec model training and generating word embeddings.
+        ```python
+        from gensim.models import Word2Vec
+        ```
 *   **Preprocessing Models**:
     *   SpaCy `en_core_web_sm` for lemmatization.
     *   NLTK `PorterStemmer` for stemming.
