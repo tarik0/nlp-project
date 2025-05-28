@@ -74,8 +74,7 @@ def load_spacy_model(model_name='en_core_web_sm'):
             print("Please ensure you have internet connectivity and necessary permissions,")
             print(f"or try installing the model manually: python -m spacy download {model_name}")
             raise
-    return nlp- Generate a project report explaining methodology, dataset, models used,
-    and evaluation metrics.
+    return nlp
 
 #
 # Download NLTK Data
